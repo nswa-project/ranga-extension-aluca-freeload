@@ -1,0 +1,9 @@
+@ com.aluca.freeload
+%api: ranga:1
+%magic: ABI_NSWA_LUA51;ABI_NSWA_LUAJIT;
+%name: 蹭网探测器
+%ver: 2.6-beta
+%author: Aluca
+%wcapp: v1
+%wcappv1-name: 探测已连接到此网络的设备
+%-x-min-system-version: 4.5.8

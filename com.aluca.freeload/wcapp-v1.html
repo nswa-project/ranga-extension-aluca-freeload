@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+	<meta name="referrer" content="no-referrer">
+
+	<style type="text/css">
+		body {
+			font-family: sans-serif;
+		}
+		h2 {
+			font-size: 1.12em;
+			margin: 12px 0;
+			border-bottom: 1px solid #dedede;
+		}
+		.tips {
+			font-size: .9em;
+			color: #4e4e4e;
+		}
+	</style>
+</head>
+
+<body>
+	<div class="tips">探测设备是否是通过 Wi-Fi 接入网络的功能，需要使用开源驱动，部分设备支持使用芯片制造商特定专有驱动程序，如果使用专有驱动程序，则可能无法探测设备是否通过 Wi-Fi 接入。</div>
+	<h2>当前在线（此刻活跃的线上用户）</h2>
+	<div id="list"></div>
+	<h2>近期有上线（此刻不活跃的线上用户和此刻存在性存疑的用户）</h2>
+	<div id="list_stale"></div>
+	<h2>曾经在线（已下线的用户）</h2>
+	<div id="list_unconnect"></div>
+	<script>
+		const $ = id => (document.getElementById(id));
+		let utils = parent.window.utils,
+			ranga = parent.window.ranga,
+			dialog = parent.window.dialog,
+			webcon = parent.window.webcon,
+			defErrorHandler = parent.window.defErrorHandler;
+
+		const __safe = (m, k) => {
+			try {
+				return m[k];
+			} catch {
+				return null;
+			}
+		}
+
+		const safe = (m, k) => {
+			let v = __safe(m, k);
+			return (utils.isNil(v) ? '未知' : v);
+		}
+
+		const safe2 = (m1, m2, k) => {
+			let v = __safe(m1, k);
+			if (utils.isNil(v))
+				v = __safe(m2, k);
+			return v;
+		}
+
+		const reload = () => {
+			let ipaddr = new Set();
+			let dhcp = {},
+				arp = {},
+				wifi = {};
+
+			webcon.lockScreen();
+			ranga.api.query('network', ['inet4neigh']).then(proto => {
+				// If use legacy "query network arp" API
+				// the legacy api can not detected stale status, stale is considered as reachable
+				//proto.payload.split('\n').splice(1).forEach(i => {
+					//let arr = i.replace(/ +/g, ' ').split(' ');
+					//if (arr.length === 6 && arr[5] === 'br-lan') {
+					//	let status = 0;
+					//	if (arr[2] === '0x0') {
+					//		status = 1;
+					//	}
+					//	ipaddr.add(arr[0]);
+					//	arp[arr[0]] = {
+					//		macaddr: arr[3],
+					//		status: status
+					//	};
+					//}
+				proto.payload.split('\n').forEach(i => {
+					let arr = i.split(' ');
+					console.log(arr);
+					if (arr.length >= 5 && arr[2] === 'br-lan') {
+						let status = 1,
+							macaddr = null;
+						switch (arr[arr.length -1]) {
+						case 'REACHABLE':
+							status = 0;
+							macaddr = arr[4];
+							break;
+						case 'FAILED':
+							status = 2;
+							break;
+						default:
+							macaddr = arr[4];
+							break;
+						}
+						ipaddr.add(arr[0]);
+						if (!utils.isNil(macaddr))
+							macaddr = macaddr.toLowerCase();
+						arp[arr[0]] = {
+							macaddr: macaddr,
+							status: status
+						};
+					}
+				});
+				return ranga.api.query('network', ['dhcp-leases']);
+			}).then(proto => {
+				proto.payload.split('\n').forEach(i => {
+					let arr = i.split(' ');
+					console.log(arr);
+					if (arr.length >= 5) {
+						ipaddr.add(arr[2]);
+						macaddr = arr[1];
+						if (!utils.isNil(macaddr))
+							macaddr = macaddr.toLowerCase();
+						dhcp[arr[2]] = {
+							macaddr: macaddr,
+							timestamp: arr[0],
+							hostname: (arr[3] === '*' ? null : arr[3])
+						};
+					}
+				});
+
+				return ranga.api.query('wifi', ['assoclist', '0']);
+			}).then(proto => {
+				parse_wifi_payload(proto.payload, wifi, '0');
+				return ranga.api.query('wifi', ['assoclist', '1']);
+			}).then(proto => {
+				parse_wifi_payload(proto.payload, wifi, '1');
+
+				let div = $('list'),
+					div_st = $('list_stale'),
+					div_un = $('list_unconnect');
+				div.textContent = '';
+				div_st.textContent = '';
+				div_un.textContent = '';
+				ipaddr.forEach(i => {
+					let s = null,
+						macaddr = safe2(arp[i], dhcp[i], 'macaddr'),
+						hostname = __safe(dhcp[i], 'hostname'),
+						timestamp = __safe(dhcp[i], 'timestamp');
+
+					if ((i in arp && arp[i].status === 2) || (!(i in arp) && i in dhcp)) {
+						s = div_un;
+					} else if ((i in arp) && arp[i].status === 1) {
+						s = div_st;
+					} else if ((i in arp) && arp[i].status === 0) {
+						s = div;
+					}
+
+					if (!utils.isNil(s))
+						s.innerHTML += "<b>INET4 用户：" + i +
+							"</b><br>主机名：" + (hostname ? hostname : "未知") +
+							"<br>媒体访问控制地址：" + (macaddr ? macaddr : "未知") +
+							"<br>DHCP 续租日期：" + (timestamp ? new Date(timestamp * 1000).toString() : '此用户没有向 DHCP 租借地址') +
+							((macaddr in wifi) ? "<br>此用户通过 Wi-Fi 接入，连接的无线设备 ID: " + wifi[macaddr].cardid : "") +
+							"<br><br>";
+				});
+			}).catch(defErrorHandler).finally(() => webcon.unlockScreen());
+		}
+
+		const parse_wifi_payload = (payload, wifi, id) => {
+			payload.split('\n\n').forEach(i => {
+				let tmp = i.split(' ');
+				if (tmp.length > 1) {
+					let macaddr = tmp[0].toLowerCase();
+					wifi[macaddr] = {
+						cardid: id
+					};
+				}
+			});
+		}
+
+		webcon.addButton('刷新', 'icon-reload', b => reload());
+		reload();
+	</script>
+</body>
+
+</html>
